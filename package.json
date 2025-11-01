@@ -1,0 +1,8 @@
+{
+  "name": "line-bonsai-bot",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "crypto": "^1.0.1"
+  }
+}
