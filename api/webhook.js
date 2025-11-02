@@ -5,19 +5,24 @@ const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN || "";
 
 // 🌦️ 抓取天氣
 async function fetchWeather(lat, lon) {
-  const res = await fetch(
-    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,uv_index,wind_speed_10m,precipitation&hourly=precipitation_probability&timezone=Asia/Taipei`
-  );
-  const data = await res.json();
-  const c = data.current;
-  const rain = data.hourly.precipitation_probability[0];
-  return {
-    temp: c.temperature_2m,
-    humid: c.relative_humidity_2m,
-    uv: c.uv_index,
-    wind: c.wind_speed_10m,
-    rain,
-  };
+  try {
+    const res = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,uv_index,wind_speed_10m,precipitation&hourly=precipitation_probability&timezone=Asia/Taipei`
+    );
+    const data = await res.json();
+    const c = data.current;
+    const rain = data.hourly.precipitation_probability[0];
+    return {
+      temp: c.temperature_2m,
+      humid: c.relative_humidity_2m,
+      uv: c.uv_index,
+      wind: c.wind_speed_10m,
+      rain,
+    };
+  } catch (err) {
+    console.error("Weather fetch failed:", err);
+    return null;
+  }
 }
 
 // 🌳 真柏建議
@@ -58,6 +63,10 @@ async function replyMessage(replyToken, messages) {
       body: JSON.stringify({ replyToken, messages }),
     });
     console.log("LINE reply status:", res.status);
+    if (!res.ok) {
+      const txt = await res.text();
+      console.error("LINE reply error:", txt);
+    }
   } catch (err) {
     console.error("replyMessage error:", err);
   }
@@ -65,49 +74,70 @@ async function replyMessage(replyToken, messages) {
 
 // --- 主 handler ---
 export default async function handler(req) {
-  // ✅ 立即回 200，避免 LINE timeout
-  if (req.method !== "POST") return new Response("OK", { status: 200 });
+  try {
+    if (req.method !== "POST") return new Response("OK", { status: 200 });
 
-  const bodyText = await req.text();
-  const signature = req.headers.get("x-line-signature");
+    const bodyText = await req.text();
+    const signature = req.headers.get("x-line-signature");
 
-  // 先回覆 200 給 LINE
-  const response = new Response("OK", { status: 200 });
+    // ✅ 先回 200 給 LINE，避免 Timeout
+    const response = new Response("OK", { status: 200 });
 
-  // ✅ 背景處理（非同步，LINE 不會等）
-  (async () => {
-    try {
-      if (!validateSignature(bodyText, signature)) {
-        console.error("Invalid signature");
-        return;
-      }
-
-      const { events = [] } = JSON.parse(bodyText);
-      for (const ev of events) {
-        if (ev.type !== "message" || ev.message.type !== "text") continue;
-
-        const text = ev.message.text.trim();
-        if (/真柏/i.test(text)) {
-          const isChanghua = /彰化/.test(text);
-          const city = isChanghua ? "彰化" : "高雄";
-          const lat = isChanghua ? 24.08 : 22.63;
-          const lon = isChanghua ? 120.54 : 120.30;
-
-          const w = await fetchWeather(lat, lon);
-          const tips = bonsaiAdvice(w.temp, w.humid, w.uv, w.wind, w.rain);
-          const msg = `🌤️【${city}今日天氣】\n🌡️ ${w.temp}°C　💧${w.humid}%　☀️UV ${w.uv}\n💨風速 ${w.wind} km/h　🌧️降雨 ${w.rain}%\n\n🌳【真柏照護建議】\n${tips}`;
-
-          await replyMessage(ev.replyToken, [{ type: "text", text: msg }]);
-        } else {
-          await replyMessage(ev.replyToken, [
-            { type: "text", text: "請輸入「真柏」或「彰化真柏」來查詢今日照護建議 🌳" },
-          ]);
+    // 背景 async 處理
+    (async () => {
+      try {
+        if (!validateSignature(bodyText, signature)) {
+          console.error("Invalid signature");
+          return;
         }
-      }
-    } catch (err) {
-      console.error("Async webhook error:", err);
-    }
-  })();
 
-  return response; // ✅ 立即結束請求
+        let parsed;
+        try {
+          parsed = JSON.parse(bodyText);
+        } catch {
+          console.error("JSON parse error");
+          return;
+        }
+
+        const events = Array.isArray(parsed.events) ? parsed.events : [];
+        for (const ev of events) {
+          if (ev.type !== "message" || ev.message.type !== "text") continue;
+
+          const text = ev.message.text.trim();
+          if (/真柏/i.test(text)) {
+            const isChanghua = /彰化/.test(text);
+            const city = isChanghua ? "彰化" : "高雄";
+            const lat = isChanghua ? 24.08 : 22.63;
+            const lon = isChanghua ? 120.54 : 120.30;
+
+            const w = await fetchWeather(lat, lon);
+            if (!w) {
+              await replyMessage(ev.replyToken, [
+                { type: "text", text: "❌ 無法取得天氣資料，請稍後再試。" },
+              ]);
+              return;
+            }
+
+            const tips = bonsaiAdvice(w.temp, w.humid, w.uv, w.wind, w.rain);
+            const msg = `🌤️【${city}今日天氣】\n🌡️ ${w.temp}°C　💧${w.humid}%　☀️UV ${w.uv}\n💨風速 ${w.wind} km/h　🌧️降雨 ${w.rain}%\n\n🌳【真柏照護建議】\n${tips}`;
+            await replyMessage(ev.replyToken, [{ type: "text", text: msg }]);
+          } else {
+            await replyMessage(ev.replyToken, [
+              {
+                type: "text",
+                text: "請輸入「真柏」或「彰化真柏」即可查看今日天氣與照護建議 🌳",
+              },
+            ]);
+          }
+        }
+      } catch (err) {
+        console.error("Async webhook error:", err);
+      }
+    })();
+
+    return response; // ✅ 永遠先回 200 給 LINE
+  } catch (err) {
+    console.error("Webhook handler error:", err);
+    return new Response("OK", { status: 200 });
+  }
 }
