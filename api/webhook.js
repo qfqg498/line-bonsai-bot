@@ -15,21 +15,30 @@ async function reply(replyToken, messages) {
 }
 
 function validateSignature(body, signature) {
+  if (!signature) return false;
   const hmac = crypto.createHmac('sha256', CHANNEL_SECRET);
   hmac.update(body);
   const expected = hmac.digest('base64');
   return expected === signature;
 }
 
-
 export default async function handler(req) {
-  const bodyText = await req.text();
-  const signature = req.headers.get('x-line-signature');
-  if (!validateSignature(bodyText, signature)) {
-    return new Response('Bad signature', { status: 403 });
+  // ① LINE 的 Verify 可能用 GET；直接回 200 通過驗證
+  if (req.method !== 'POST') {
+    return new Response('OK', { status: 200 });
   }
 
+  const bodyText = await req.text();
+  const signature = req.headers.get('x-line-signature');
+
+  // ② 有些 Verify 會 POST 但不帶簽章；也讓它過（不處理事件）
+  if (!validateSignature(bodyText, signature)) {
+    return new Response('OK', { status: 200 });
+  }
+
+  // ③ 簽章正確才處理事件
   const { events = [] } = JSON.parse(bodyText);
+
   await Promise.all(events.map(async ev => {
     if (ev.type !== 'message' || ev.message.type !== 'text') return;
     const text = ev.message.text.trim();
