@@ -1,124 +1,96 @@
-// ✅ 強制使用 Node.js runtime（非 Edge）
-export const config = {
-  runtime: "nodejs",
-};
+const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
+const USER_ID = process.env.USER_ID;
 
-import crypto from "crypto";
-
-// === 環境變數 ===
-const CHANNEL_SECRET = process.env.CHANNEL_SECRET || "";
-const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN || "";
-
-// === 簽章驗證 ===
-function validateSignature(body, signature) {
-  try {
-    if (!signature) return false; // Verify 時可能不帶簽章
-    const hmac = crypto.createHmac("sha256", CHANNEL_SECRET);
-    hmac.update(body);
-    const expected = hmac.digest("base64");
-    return expected === signature;
-  } catch (err) {
-    console.error("Signature validation error:", err);
-    return false;
-  }
+// 🪴 真柏月計畫
+function monthlyPlan(month) {
+  const plans = {
+    1: "❄️ 一月：氣溫偏低，減少澆水量，避免凍害，可進行整枝與清理苔蘚。",
+    2: "🌤️ 二月：氣候漸暖，修剪老枝，逐步增加日照與通風。",
+    3: "🌱 三月：春芽萌發期，加強施肥與澆水，避免夜間低溫。",
+    4: "🌿 四月：生長旺盛期，修剪與換盆最佳時機。",
+    5: "☀️ 五月：日照強烈，須加強遮陰與噴霧保濕。",
+    6: "🔥 六月：高溫高濕，注意通風與病蟲害防治。",
+    7: "🌞 七月：強紫外線，避免中午直曬，控制肥料濃度。",
+    8: "🌤️ 八月：維持良好通風，修剪第二輪新梢。",
+    9: "🍂 九月：開始減少施肥，準備入秋，促進木質化。",
+    10: "🍁 十月：可進行輕度修剪，減少澆水。",
+    11: "🌧️ 十一月：氣溫下降，進入休眠期，避免過濕。",
+    12: "🎄 十二月：全面休眠期，減少施肥與澆水。",
+  };
+  return plans[month] || "🌳 本月無特別建議，維持日常照護即可。";
 }
 
-// === 安全回覆 ===
-async function safeReply(replyToken, messages) {
-  if (!CHANNEL_ACCESS_TOKEN) return;
-  try {
-    await fetch("https://api.line.me/v2/bot/message/reply", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
-      },
-      body: JSON.stringify({ replyToken, messages }),
-    });
-  } catch (e) {
-    console.error("Reply error:", e);
-  }
+// 🌦️ 根據天氣給每日建議
+function bonsaiAdvice(temp, humidity, uv, wind, rain) {
+  let msg = "";
+  if (temp >= 33) msg += "🔥 高溫注意避曬、加強通風。\n";
+  if (temp <= 15) msg += "🥶 溫度偏低，應減少澆水頻率。\n";
+  if (humidity < 50) msg += "💧 空氣乾燥，建議早晚噴霧保持濕度。\n";
+  if (uv >= 7) msg += "🌞 紫外線強，建議遮陽避免灼傷。\n";
+  if (wind >= 25) msg += "💨 強風注意固定與防乾風。\n";
+  if (rain >= 60) msg += "🌧️ 降雨高，減少澆水並檢查排水孔。\n";
+  if (!msg) msg = "✅ 天氣穩定，維持日常管理即可。";
+  return msg;
 }
 
-// === 測試事件 Token 檢查 ===
-function isTestReplyToken(token = "") {
-  return (
-    /^0{8,}/i.test(token) ||
-    /^f{8,}/i.test(token) ||
-    token.toLowerCase().includes("test")
+async function fetchWeather() {
+  const res = await fetch(
+    "https://api.open-meteo.com/v1/forecast?latitude=22.63&longitude=120.30&current=temperature_2m,relative_humidity_2m,uv_index,wind_speed_10m,precipitation&hourly=precipitation_probability&timezone=Asia/Taipei"
   );
+  const data = await res.json();
+  const c = data.current;
+  const rain = data.hourly.precipitation_probability[0];
+  return {
+    temp: c.temperature_2m,
+    humid: c.relative_humidity_2m,
+    uv: c.uv_index,
+    wind: c.wind_speed_10m,
+    rain,
+  };
 }
 
-// === 主處理函式 ===
-export default async function handler(req, res) {
-  try {
-    // ✅ LINE Verify 會送 GET 請求：直接回 200
-    if (req.method !== "POST") {
-      return res.status(200).send("OK");
-    }
-
-    // 取得原始 body & header
-    const bodyText = req.body ? JSON.stringify(req.body) : await getRawBody(req);
-    const signature = req.headers["x-line-signature"];
-
-    // 驗簽不通過：回 200 不報錯
-    if (!validateSignature(bodyText, signature)) {
-      return res.status(200).send("OK");
-    }
-
-    // 解析事件
-    const parsed = typeof req.body === "object" ? req.body : JSON.parse(bodyText);
-    const events = Array.isArray(parsed?.events) ? parsed.events : [];
-
-    if (events.length === 0) return res.status(200).send("OK");
-
-    // === 處理所有事件 ===
-    await Promise.all(
-      events.map(async (ev) => {
-        try {
-          if (ev.type !== "message" || ev.message?.type !== "text") return;
-
-          const replyToken = ev.replyToken || "";
-          if (isTestReplyToken(replyToken)) return;
-
-          const text = (ev.message?.text || "").trim();
-          const userId = ev.source?.userId || "-";
-
-          if (/^status$/i.test(text)) {
-            await safeReply(replyToken, [
-              {
-                type: "text",
-                text: `✅ Bot online\nuserId: ${userId}\nLAT:${process.env.LAT ?? "-"} LON:${process.env.LON ?? "-"}`,
-              },
-            ]);
-            return;
-          }
-
-          await safeReply(replyToken, [
-            {
-              type: "text",
-              text: `指令：\nstatus － 檢查連線並顯示你的 userId`,
-            },
-          ]);
-        } catch (e) {
-          console.error("Event handling error:", e);
-        }
-      })
-    );
-
-    return res.status(200).send("OK");
-  } catch (err) {
-    console.error("Handler error:", err);
-    return res.status(200).send("OK");
-  }
-}
-
-// === Utility：若 body 沒自動 parse，用這個讀原始文字 ===
-async function getRawBody(req) {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
+// 📨 推播訊息
+async function pushMessage(message) {
+  await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      to: USER_ID,
+      messages: [{ type: "text", text: message }],
+    }),
   });
 }
+
+// ---- 主 handler ----
+export default async function handler(req, res) {
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const hour = now.getHours();
+
+  try {
+    // 每月初推播月計畫
+    if (req.query.type === "month") {
+      const plan = monthlyPlan(month);
+      await pushMessage(`📅【${month}月真柏月計畫】\n${plan}`);
+      return res.status(200).send("Monthly plan sent");
+    }
+
+    // 每日推播當天氣象建議
+    if (req.query.type === "daily") {
+      const w = await fetchWeather();
+      const tips = bonsaiAdvice(w.temp, w.humid, w.uv, w.wind, w.rain);
+      const msg = `🌤️【高雄今日天氣】\n🌡️ ${w.temp}°C　💧${w.humid}%　☀️UV ${w.uv}\n💨風速 ${w.wind} km/h　🌧️降雨 ${w.rain}%\n\n🌳【真柏建議】\n${tips}`;
+      await pushMessage(msg);
+      return res.status(200).send("Daily bonsai weather sent");
+    }
+
+    return res.status(200).send("OK");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Push failed");
+  }
+}
+
