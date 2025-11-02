@@ -1,23 +1,22 @@
 // webhook.js
 import crypto from "crypto";
 
-// 讀取環境變數
+// 環境變數
 const CHANNEL_SECRET = process.env.CHANNEL_SECRET || "";
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN || "";
 
-// ✅ 高雄天氣 API（加上 timeout 保護）
-async function fetchWeather() {
+// ✅ 高雄天氣 API（加上 timeout + retry）
+async function fetchWeather(retry = 0) {
+  const url =
+    "https://api.open-meteo.com/v1/forecast?latitude=22.63&longitude=120.30&current=temperature_2m,relative_humidity_2m,uv_index,wind_speed_10m,precipitation&hourly=precipitation_probability&timezone=Asia/Taipei";
+
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000); // 最多等 7 秒
-
-    const res = await fetch(
-      "https://api.open-meteo.com/v1/forecast?latitude=22.63&longitude=120.30&current=temperature_2m,relative_humidity_2m,uv_index,wind_speed_10m,precipitation&hourly=precipitation_probability&timezone=Asia/Taipei",
-      { signal: controller.signal }
-    );
+    const timeout = setTimeout(() => controller.abort(), 10000); // 最多等 10 秒
+    const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
 
-    if (!res.ok) throw new Error(`Weather API HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const c = data.current;
     const rain = data.hourly.precipitation_probability[0];
@@ -29,8 +28,16 @@ async function fetchWeather() {
       rain,
     };
   } catch (err) {
-    console.error("⚠️ fetchWeather failed:", err);
-    // 備援：若 API 掛了，用預設值避免 500 錯誤
+    console.error(`⚠️ fetchWeather failed (attempt ${retry + 1}):`, err);
+
+    // 自動重試最多 2 次
+    if (retry < 2) {
+      await new Promise((r) => setTimeout(r, 1500)); // 等 1.5 秒再試
+      return fetchWeather(retry + 1);
+    }
+
+    // 超過 2 次失敗 → 回傳預設值
+    console.warn("⚠️ Weather API unavailable, using fallback values");
     return { temp: 25, humid: 60, uv: 5, wind: 10, rain: 20 };
   }
 }
@@ -62,16 +69,17 @@ async function replyMessage(replyToken, text) {
         messages: [{ type: "text", text }],
       }),
     });
-    const result = await res.text();
-    console.log("📨 LINE reply result:", result);
+
+    const resultText = await res.text();
+    console.log("📨 LINE reply result:", resultText);
   } catch (err) {
     console.error("❌ Reply error:", err);
   }
 }
 
-// ✅ Webhook handler
+// ✅ Webhook 主處理
 export default async function handler(req, res) {
-  // ⚡ 先立即回 200，避免 LINE timeout
+  // 先回 200，避免 LINE timeout
   res.status(200).send("OK");
 
   try {
@@ -93,7 +101,7 @@ export default async function handler(req, res) {
   }
 }
 
-// 📦 Vercel 不自動解析 body，補一個 helper
+// 📦 讀取原始 body（Vercel 不自動解析）
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
