@@ -1,3 +1,33 @@
+export default async function handler(req, res) {
+  // 先立即回應 LINE，避免 timeout
+  res.status(200).send("OK");
+
+  try {
+    // 後續邏輯放這裡（非同步處理）
+    const event = req.body.events?.[0];
+    if (!event) return;
+
+    const userMessage = event.message?.text || "";
+
+    if (userMessage.includes("真柏")) {
+      const weather = await fetchWeather();
+      const tips = bonsaiAdvice(
+        weather.temp,
+        weather.humid,
+        weather.uv,
+        weather.wind,
+        weather.rain
+      );
+
+      const reply = `🌳【今日高雄天氣】\n🌡️${weather.temp}°C 💧${weather.humid}% ☀️UV ${weather.uv}\n💨${weather.wind} km/h 🌧️${weather.rain}%\n\n🪴【真柏照護建議】\n${tips}`;
+
+      await replyMessage(event.replyToken, reply);
+    }
+  } catch (err) {
+    console.error("Webhook error:", err);
+  }
+}
+
 import crypto from "crypto";
 
 const CHANNEL_SECRET = process.env.CHANNEL_SECRET || "";
