@@ -3,10 +3,10 @@ import crypto from "crypto";
 const CHANNEL_SECRET = process.env.CHANNEL_SECRET || "";
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN || "";
 
-// 🌦️ 抓取高雄天氣
-async function fetchWeather() {
+// 🌦️ 抓取天氣
+async function fetchWeather(lat, lon) {
   const res = await fetch(
-    "https://api.open-meteo.com/v1/forecast?latitude=22.63&longitude=120.30&current=temperature_2m,relative_humidity_2m,uv_index,wind_speed_10m,precipitation&hourly=precipitation_probability&timezone=Asia/Taipei"
+    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,uv_index,wind_speed_10m,precipitation&hourly=precipitation_probability&timezone=Asia/Taipei`
   );
   const data = await res.json();
   const c = data.current;
@@ -33,19 +33,26 @@ function bonsaiAdvice(temp, humidity, uv, wind, rain) {
   return msg;
 }
 
-// --- LINE 驗證簽章 ---
+// 驗證簽章
 function validateSignature(body, signature) {
-  if (!signature) return false;
-  const hmac = crypto.createHmac("sha256", CHANNEL_SECRET);
-  hmac.update(body);
-  const expected = hmac.digest("base64");
-  return expected === signature;
+  try {
+    const hmac = crypto.createHmac("sha256", CHANNEL_SECRET);
+    hmac.update(body);
+    const expected = hmac.digest("base64");
+    return expected === signature;
+  } catch (e) {
+    console.error("Signature validation failed:", e);
+    return false;
+  }
 }
 
-// --- 回覆訊息 ---
-async function reply(replyToken, messages) {
-  if (!CHANNEL_ACCESS_TOKEN) return;
-  await fetch("https://api.line.me/v2/bot/message/reply", {
+// 回覆訊息
+async function replyMessage(replyToken, messages) {
+  if (!CHANNEL_ACCESS_TOKEN) {
+    console.error("Missing access token!");
+    return;
+  }
+  const res = await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -53,47 +60,52 @@ async function reply(replyToken, messages) {
     },
     body: JSON.stringify({ replyToken, messages }),
   });
+  console.log("LINE reply status:", res.status);
 }
 
 // --- 主 handler ---
 export default async function handler(req) {
-  // 非 POST：直接回 200（LINE 驗證會用 GET）
-  if (req.method !== "POST") return new Response("OK", { status: 200 });
+  try {
+    if (req.method !== "POST") return new Response("OK", { status: 200 });
 
-  const bodyText = await req.text();
-  const signature = req.headers.get("x-line-signature");
-  if (!validateSignature(bodyText, signature)) return new Response("OK", { status: 200 });
+    const bodyText = await req.text();
+    const signature = req.headers.get("x-line-signature");
+    if (!validateSignature(bodyText, signature)) {
+      console.error("Invalid signature");
+      return new Response("OK", { status: 200 });
+    }
 
-  const { events = [] } = JSON.parse(bodyText);
+    const { events = [] } = JSON.parse(bodyText);
 
-  await Promise.all(
-    events.map(async (ev) => {
-      if (ev.type !== "message" || ev.message.type !== "text") return;
-
+    for (const ev of events) {
+      if (ev.type !== "message" || ev.message.type !== "text") continue;
       const text = ev.message.text.trim();
 
-      // 🔍 使用者打「真柏」
+      // 🌳 真柏關鍵字
       if (/真柏/i.test(text)) {
-        try {
-          const w = await fetchWeather();
-          const tips = bonsaiAdvice(w.temp, w.humid, w.uv, w.wind, w.rain);
-          const msg = `🌤️【高雄今日天氣】\n🌡️ ${w.temp}°C　💧${w.humid}%　☀️UV ${w.uv}\n💨風速 ${w.wind} km/h　🌧️降雨 ${w.rain}%\n\n🌳【真柏照護建議】\n${tips}`;
-          await reply(ev.replyToken, [{ type: "text", text: msg }]);
-        } catch (e) {
-          console.error("weather error:", e);
-          await reply(ev.replyToken, [
-            { type: "text", text: "⚠️ 無法取得天氣資料，請稍後再試。" },
-          ]);
-        }
-        return;
+        const isChanghua = /彰化/.test(text);
+        const city = isChanghua ? "彰化" : "高雄";
+        const lat = isChanghua ? 24.08 : 22.63;
+        const lon = isChanghua ? 120.54 : 120.30;
+
+        const w = await fetchWeather(lat, lon);
+        const tips = bonsaiAdvice(w.temp, w.humid, w.uv, w.wind, w.rain);
+        const msg = `🌤️【${city}今日天氣】\n🌡️ ${w.temp}°C　💧${w.humid}%　☀️UV ${w.uv}\n💨風速 ${w.wind} km/h　🌧️降雨 ${w.rain}%\n\n🌳【真柏照護建議】\n${tips}`;
+
+        await replyMessage(ev.replyToken, [{ type: "text", text: msg }]);
+      } else {
+        await replyMessage(ev.replyToken, [
+          {
+            type: "text",
+            text: "請輸入「真柏」或「彰化真柏」即可查看今日天氣與照護建議 🌳",
+          },
+        ]);
       }
+    }
 
-      // 🗒️ 其他文字：提示指令
-      await reply(ev.replyToken, [
-        { type: "text", text: "請輸入「真柏」即可查看高雄今日天氣與照護建議 🌳" },
-      ]);
-    })
-  );
-
-  return new Response("OK", { status: 200 });
+    return new Response("OK", { status: 200 });
+  } catch (err) {
+    console.error("Webhook error:", err);
+    return new Response("OK", { status: 200 }); // 永遠回 200，避免 LINE 誤判錯誤
+  }
 }
