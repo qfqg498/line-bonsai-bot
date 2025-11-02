@@ -93,23 +93,3 @@ export default async function handler(req, res) {
     res.status(500).send("Push failed");
   }
 }
-
-if (["status", "狀態"].includes(text)) {
-  const src = ev.source || {};
-  const info = [
-    "✅ Bot online",
-    `type: ${src.type ?? "-"}`,
-    src.userId ? `userId: ${src.userId}` : "",
-    src.groupId ? `groupId: ${src.groupId}` : "",
-    src.roomId ? `roomId: ${src.roomId}` : "",
-    `LAT:${process.env.LAT ?? "-"}`,
-    `LON:${process.env.LON ?? "-"}`
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  await safeReply(replyToken, [{ type: "text", text: info }]);
-  return;
-}
-
-
