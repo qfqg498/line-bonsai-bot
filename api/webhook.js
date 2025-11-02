@@ -21,7 +21,6 @@ function validateSignature(body, signature) {
   return expected === signature;
 }
 
-export const config = { runtime: 'edge' };
 
 export default async function handler(req) {
   const bodyText = await req.text();
