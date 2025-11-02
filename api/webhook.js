@@ -5,24 +5,37 @@ import crypto from "crypto";
 const CHANNEL_SECRET = process.env.CHANNEL_SECRET || "";
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN || "";
 
-// ✅ 天氣 API：高雄
+// ✅ 高雄天氣 API（加上 timeout 保護）
 async function fetchWeather() {
-  const res = await fetch(
-    "https://api.open-meteo.com/v1/forecast?latitude=22.63&longitude=120.30&current=temperature_2m,relative_humidity_2m,uv_index,wind_speed_10m,precipitation&hourly=precipitation_probability&timezone=Asia/Taipei"
-  );
-  const data = await res.json();
-  const c = data.current;
-  const rain = data.hourly.precipitation_probability[0];
-  return {
-    temp: c.temperature_2m,
-    humid: c.relative_humidity_2m,
-    uv: c.uv_index,
-    wind: c.wind_speed_10m,
-    rain,
-  };
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000); // 最多等 7 秒
+
+    const res = await fetch(
+      "https://api.open-meteo.com/v1/forecast?latitude=22.63&longitude=120.30&current=temperature_2m,relative_humidity_2m,uv_index,wind_speed_10m,precipitation&hourly=precipitation_probability&timezone=Asia/Taipei",
+      { signal: controller.signal }
+    );
+    clearTimeout(timeout);
+
+    if (!res.ok) throw new Error(`Weather API HTTP ${res.status}`);
+    const data = await res.json();
+    const c = data.current;
+    const rain = data.hourly.precipitation_probability[0];
+    return {
+      temp: c.temperature_2m,
+      humid: c.relative_humidity_2m,
+      uv: c.uv_index,
+      wind: c.wind_speed_10m,
+      rain,
+    };
+  } catch (err) {
+    console.error("⚠️ fetchWeather failed:", err);
+    // 備援：若 API 掛了，用預設值避免 500 錯誤
+    return { temp: 25, humid: 60, uv: 5, wind: 10, rain: 20 };
+  }
 }
 
-// ✅ 真柏建議邏輯
+// ✅ 真柏照護建議
 function bonsaiAdvice(temp, humidity, uv, wind, rain) {
   let msg = "";
   if (temp >= 33) msg += "🔥 高溫注意避曬、加強通風。\n";
@@ -35,10 +48,10 @@ function bonsaiAdvice(temp, humidity, uv, wind, rain) {
   return msg;
 }
 
-// ✅ 回覆訊息
+// ✅ 回覆訊息給 LINE
 async function replyMessage(replyToken, text) {
   try {
-    await fetch("https://api.line.me/v2/bot/message/reply", {
+    const res = await fetch("https://api.line.me/v2/bot/message/reply", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -49,14 +62,16 @@ async function replyMessage(replyToken, text) {
         messages: [{ type: "text", text }],
       }),
     });
+    const result = await res.text();
+    console.log("📨 LINE reply result:", result);
   } catch (err) {
-    console.error("Reply error:", err);
+    console.error("❌ Reply error:", err);
   }
 }
 
 // ✅ Webhook handler
 export default async function handler(req, res) {
-  // ⚡ 先回 200，避免 LINE timeout
+  // ⚡ 先立即回 200，避免 LINE timeout
   res.status(200).send("OK");
 
   try {
@@ -65,6 +80,8 @@ export default async function handler(req, res) {
     if (!event || event.type !== "message") return;
 
     const text = event.message?.text?.trim() || "";
+    console.log("💬 Received message:", text);
+
     if (text.includes("真柏")) {
       const w = await fetchWeather();
       const tips = bonsaiAdvice(w.temp, w.humid, w.uv, w.wind, w.rain);
@@ -76,7 +93,7 @@ export default async function handler(req, res) {
   }
 }
 
-// 📦 補上 readBody（Vercel 預設不自動解析）
+// 📦 Vercel 不自動解析 body，補一個 helper
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
